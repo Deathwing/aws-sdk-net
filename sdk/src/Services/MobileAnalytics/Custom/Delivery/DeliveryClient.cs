@@ -78,10 +78,24 @@ namespace Amazon.MobileAnalytics.MobileAnalyticsManager.Internal
         /// <param name="eventObject">Event object.<see cref="Amazon.MobileAnalytics.Model.Event"/></param>
         public void EnqueueEventsForDelivery(Amazon.MobileAnalytics.Model.Event eventObject)
         {
+#if UNITY
+            if(UnityEngine.Application.platform == UnityEngine.RuntimePlatform.WebGLPlayer) 
+            {
+                UnityRequestQueue.Instance.ExecuteOnMainThread(() => EnqueueEventsHelper(eventObject));
+            }
+            else 
+            {
+                ThreadPool.QueueUserWorkItem(new WaitCallback(delegate 
+                {
+                    EnqueueEventsHelper(eventObject);
+                }));
+            }
+#else
             ThreadPool.QueueUserWorkItem(new WaitCallback(delegate
             {
                 EnqueueEventsHelper(eventObject);
             }));
+#endif
         }
 
         /// <summary>
