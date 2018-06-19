@@ -174,12 +174,26 @@ namespace Amazon.MobileAnalytics.MobileAnalyticsManager.Internal
                 SubmitEvents(submitEventsIdList, submitEventsList);
         }
 
+
         /// <summary>
         /// Submits a single batch of events to the service.
         /// </summary>
         /// <param name="rowIds">Row identifiers. The list of rowId, that is unique identifier of each event.</param>
         /// <param name="eventList">The list of events that need to be submitted.</param>
         private void SubmitEvents(List<string> rowIds, List<Amazon.MobileAnalytics.Model.Event> eventList)
+        {
+#if UNITY
+            if (UnityEngine.Application.platform == UnityEngine.RuntimePlatform.WebGLPlayer)
+                SubmitEventsWebGL(rowIds, eventList);
+            else
+                SubmitEventsInternal(rowIds, eventList);
+#else
+            SubmitEventsInternal(rowIds, eventList);
+#endif
+
+        }
+
+        private void SubmitEventsInternal(List<string> rowIds, List<Amazon.MobileAnalytics.Model.Event> eventList)
         {
             PutEventsRequest putRequest = new PutEventsRequest();
             putRequest.Events = eventList;
@@ -246,8 +260,72 @@ namespace Amazon.MobileAnalytics.MobileAnalyticsManager.Internal
                     _deliveryInProgress = false;
                 }
             }
+        }
 
-            
+        private void SubmitEventsWebGL(List<string> rowIds, List<Amazon.MobileAnalytics.Model.Event> eventList)
+        {
+            PutEventsRequest putRequest = new PutEventsRequest();
+            putRequest.Events = eventList;
+            putRequest.ClientContext = Convert.ToBase64String(
+                                        System.Text.Encoding.UTF8.GetBytes(_clientContext.ToJsonString()));
+            putRequest.ClientContextEncoding = "base64";
+            _logger.DebugFormat("Client Context is : {0}", _clientContext.ToJsonString());
+
+            _mobileAnalyticsLowLevelClient.PutEventsAsync(putRequest, result => 
+            {
+                if (result.Exception != null) 
+                {
+                    if (result.Exception is AmazonMobileAnalyticsException) 
+                    {
+                        AmazonMobileAnalyticsException e = result.Exception as AmazonMobileAnalyticsException;
+                        _logger.Error(e, "An AmazonMobileAnalyticsException occurred while sending Amazon Mobile Analytics request: error code is {0} ; error type is {1} ; request id is {2} ; status code is {3} ; error message is {4}", e.ErrorCode, e.ErrorType, e.RequestId, e.StatusCode, e.Message);
+                        // Delete events in any of the three error codes.
+                        if (e.ErrorCode.Equals("ValidationException", StringComparison.CurrentCultureIgnoreCase) ||
+                            e.ErrorCode.Equals("SerializationException", StringComparison.CurrentCultureIgnoreCase) ||
+                            e.ErrorCode.Equals("BadRequestException", StringComparison.CurrentCultureIgnoreCase)) 
+                        {
+                            MobileAnalyticsErrorEventArgs eventArgs = new MobileAnalyticsErrorEventArgs(this.GetType().Name, "Amazon Mobile Analytics Service returned an error.", e, eventList);
+                            _maManager.OnRaiseErrorEvent(eventArgs);
+
+                            _logger.InfoFormat("The error code is not retriable. Delete {0} events from local storage.", rowIds.Count);
+                            _eventStore.DeleteEvent(rowIds);
+                            if (_eventStore is FileEventStore _fileEventStore)
+                                _fileEventStore.SaveDatabase();
+                        }
+                        else 
+                        {
+                            MobileAnalyticsErrorEventArgs eventArgs = new MobileAnalyticsErrorEventArgs(this.GetType().Name, "Amazon Mobile Analytics Service returned an error.", e, new List<Amazon.MobileAnalytics.Model.Event>());
+                            _maManager.OnRaiseErrorEvent(eventArgs);
+                        }
+                    }
+                    else if (result.Exception is AmazonServiceException) 
+                    {
+                        AmazonServiceException e = result.Exception as AmazonServiceException;
+                        _logger.Error(e, "An AmazonServiceException occurred while sending Amazon Mobile Analytics request:  error code is {0} ; error type is {1} ; request id is {2} ; status code is {3} ; error message is {4} ", e.ErrorCode, e.ErrorType, e.RequestId, e.StatusCode, e.Message);
+                        MobileAnalyticsErrorEventArgs eventArgs = new MobileAnalyticsErrorEventArgs(this.GetType().Name, "Amazon Web Service returned an error.", e, new List<Amazon.MobileAnalytics.Model.Event>());
+                        _maManager.OnRaiseErrorEvent(eventArgs);
+                    }
+                    else 
+                    {
+                        Exception e = result.Exception as Exception;
+                        _logger.Error(e, "An exception occurred while sending Amazon Mobile Analytics request.");
+                        MobileAnalyticsErrorEventArgs eventArgs = new MobileAnalyticsErrorEventArgs(this.GetType().Name, "An exception occurred when sending request to Amazon Mobile Analytics.", e, new List<Amazon.MobileAnalytics.Model.Event>());
+                        _maManager.OnRaiseErrorEvent(eventArgs);
+                    }
+                }
+
+                if (result.Response != null && result.Response.HttpStatusCode == HttpStatusCode.Accepted) 
+                {
+                    _logger.InfoFormat("Mobile Analytics client successfully delivered {0} events to service. Delete those events from local storage.", rowIds.Count);
+                    _eventStore.DeleteEvent(rowIds);
+                    if (_eventStore is FileEventStore _fileEventStore)
+                        _fileEventStore.SaveDatabase();
+                }
+                lock (_deliveryLock) 
+                {
+                    _deliveryInProgress = false;
+                }
+            });
         }
 #endif
 
@@ -341,7 +419,7 @@ namespace Amazon.MobileAnalytics.MobileAnalyticsManager.Internal
         /// </summary>
         /// <param name="rowIds">Row identifiers. The list of rowId, that is unique identifier of each event.</param>
         /// <param name="eventList">The list of events that need to be submitted.</param>
-#if BCL35        
+#if BCL35
         private void SubmitEvents(List<string> rowIds, List<Amazon.MobileAnalytics.Model.Event> eventList)
 #elif PCL || BCL45
         private async Task SubmitEvents(List<string> rowIds, List<Amazon.MobileAnalytics.Model.Event> eventList)
